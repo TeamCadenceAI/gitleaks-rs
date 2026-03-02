@@ -2,7 +2,6 @@
 
 [![Crates.io](https://img.shields.io/crates/v/gitleaks-rs.svg)](https://crates.io/crates/gitleaks-rs)
 [![docs.rs](https://docs.rs/gitleaks-rs/badge.svg)](https://docs.rs/gitleaks-rs)
-[![CI](https://github.com/TeamCadenceAI/gitleaks-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/TeamCadenceAI/gitleaks-rs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 [API Docs](https://docs.rs/gitleaks-rs) |
@@ -104,8 +103,8 @@ cargo run --example advanced
 
 - **Keyword pre-filtering** eliminates >95% of regex evaluations — most lines never touch the regex engine
 - **One-time compilation** — all regexes and the Aho-Corasick automaton are built once at `Scanner::new()`, not per scan
-- **Target: <100ms** to scan 1 MB of text with all 222 rules
-- **Target: <100ms** for `Scanner::new()` cold start (compile all rules)
+- **Design goal: <100ms** to scan 1 MB of text with all 222 rules (not yet benchmarked)
+- **Design goal: <100ms** for `Scanner::new()` cold start (not yet benchmarked)
 
 ## Getting Help
 
@@ -118,7 +117,7 @@ Contributions are welcome! Please open an issue to discuss your idea before subm
 
 ## Supported Rust Versions
 
-`gitleaks-rs` is built against the latest stable Rust release. The minimum supported Rust version (MSRV) is **1.70** (edition 2021).
+`gitleaks-rs` is built against the latest stable Rust release. No MSRV policy has been established yet.
 
 ## Related Projects
 

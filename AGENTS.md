@@ -71,7 +71,7 @@ cargo clippy               # lint
 
 ## Using the cargo-agent Skill
 
-When the `cargo-agent` skill is available (in Claude Code), **always prefer it** over raw `cargo` commands for checking, linting, formatting, and testing. It wraps `cargo fmt`, `cargo clippy`, and `cargo test` into a single command with structured, agent-friendly output that highlights diagnostics clearly.
+When the `cargo-agent` skill is available, prefer it over raw `cargo` commands for checking, linting, formatting, and testing. It wraps `cargo fmt`, `cargo clippy`, and `cargo test` into a single command with structured, agent-friendly output that highlights diagnostics clearly. If the skill is not available, fall back to the raw `cargo` commands listed above.
 
 ```bash
 # Run all checks (fmt + clippy + test):
@@ -112,3 +112,4 @@ The skill produces structured output with clear pass/fail summaries. Use it as t
 - Do not add non-Rust dependencies (no FFI, no build scripts calling external tools)
 - Do not modify `src/default_config.toml` unless upgrading the upstream gitleaks rule set
 - Keep the public API surface small — only re-export types that downstream users need
+- Do not include unverified factual claims in documentation (e.g., MSRV, performance numbers, CI badge URLs) — verify before committing or mark explicitly as aspirational targets

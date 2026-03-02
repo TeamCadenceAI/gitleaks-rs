@@ -82,7 +82,7 @@ fn main() {
     let scanner = Scanner::new(merged).unwrap();
 
     println!(
-        "  Scanner loaded with {} rules (222 defaults + custom)",
+        "  Scanner loaded with {} rules (defaults + custom)",
         scanner.rule_count()
     );
 
