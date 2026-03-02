@@ -1,0 +1,12 @@
+---
+cadence_version: 2
+agent: claude-code
+session_id: c150ef65-a75b-4b02-bb88-aca2fb79cb99
+repo: /Users/chrisraethke/projects/gitleaks-rs
+commit: c66dc1c475b704f3bdb5030ce0e98961792eb2b6
+confidence: time_window_match
+session_start: 2026-03-01T20:58:34Z
+payload_blob: 3b62d5d3f375b63527a2ff46624831978ac274a8
+payload_sha256: e15e8e36615510730d5c8711022ca1403e5994c1e139d91ce47de278518f22cd
+payload_encoding: zstd+pgp
+---
