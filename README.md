@@ -1,11 +1,8 @@
 # gitleaks-rs
 
-[![Crates.io](https://img.shields.io/crates/v/gitleaks-rs.svg)](https://crates.io/crates/gitleaks-rs)
-[![docs.rs](https://docs.rs/gitleaks-rs/badge.svg)](https://docs.rs/gitleaks-rs)
+[![CI](https://github.com/TeamCadenceAI/gitleaks-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/TeamCadenceAI/gitleaks-rs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[API Docs](https://docs.rs/gitleaks-rs) |
-[Crate](https://crates.io/crates/gitleaks-rs) |
 [GitHub](https://github.com/TeamCadenceAI/gitleaks-rs)
 
 ## Overview

@@ -112,4 +112,3 @@ The skill produces structured output with clear pass/fail summaries. Use it as t
 - Do not add non-Rust dependencies (no FFI, no build scripts calling external tools)
 - Do not modify `src/default_config.toml` unless upgrading the upstream gitleaks rule set
 - Keep the public API surface small — only re-export types that downstream users need
-- Do not include unverified factual claims in documentation (e.g., MSRV, performance numbers, CI badge URLs) — verify before committing or mark explicitly as aspirational targets
