@@ -51,10 +51,7 @@ fn main() {
         .expect("valid config");
 
     let scanner = Scanner::new(config).unwrap();
-    let findings = scanner.scan_text(
-        "auth = INTERNAL_ABCDEFGHIJKLMNOP0123456789ABCDEF\n",
-        None,
-    );
+    let findings = scanner.scan_text("auth = INTERNAL_ABCDEFGHIJKLMNOP0123456789ABCDEF\n", None);
 
     for f in &findings {
         println!("  [{}] {}: {}", f.rule_id, f.description, f.secret);

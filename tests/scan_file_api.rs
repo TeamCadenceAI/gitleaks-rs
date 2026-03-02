@@ -66,7 +66,7 @@ fn scan_file_multiple_secrets_with_line_numbers() {
         writeln!(f, "nothing here").unwrap();
         writeln!(f, r#"key = "first_secret""#).unwrap();
         writeln!(f, "blank line").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, r#"key = "second_secret""#).unwrap();
     }
 
