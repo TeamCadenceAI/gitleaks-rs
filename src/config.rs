@@ -729,7 +729,6 @@ regex = '''y'''
 
     #[test]
     fn config_version_constant() {
-        assert!(!GITLEAKS_CONFIG_VERSION.is_empty());
         assert!(GITLEAKS_CONFIG_VERSION.starts_with('v'));
     }
 
@@ -1189,7 +1188,7 @@ regex = '''y'''
 
     #[test]
     fn extend_preserves_self_title() {
-        let mut base = Config::from_toml(
+        let base = Config::from_toml(
             r#"
 title = "base title"
 

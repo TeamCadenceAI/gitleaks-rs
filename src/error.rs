@@ -84,8 +84,9 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::invalid_regex)]
     fn display_regex_error() {
-        let re_err = regex::Regex::new("[invalid").unwrap_err();
+        let re_err = regex::Regex::new(r"[invalid").unwrap_err();
         let err = Error::from(re_err);
         assert!(err.to_string().starts_with("regex error:"));
     }
