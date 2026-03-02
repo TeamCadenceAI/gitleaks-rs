@@ -1,0 +1,19 @@
+[package]
+name = "gitleaks-rs"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust implementation of the gitleaks secret detection rule engine"
+license = "MIT"
+repository = "https://github.com/TeamCadenceAI/gitleaks-rs"
+keywords = ["gitleaks", "secrets", "security", "scanning", "redaction"]
+categories = ["development-tools", "text-processing"]
+readme = "README.md"
+
+[dependencies]
+aho-corasick = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+pretty_assertions = "1"
