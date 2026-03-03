@@ -32,9 +32,9 @@ const REGEX_SIZE_LIMIT: usize = 100 * (1 << 20);
 pub(crate) struct CompiledRuleAllowlist {
     #[allow(dead_code)] // Metadata; used by downstream specs for reporting.
     pub(crate) description: Option<String>,
-    pub(crate) regexes: Vec<Regex>,
+    pub(crate) regexes: Vec<MatchOnlyRegex>,
     pub(crate) regex_target: RegexTarget,
-    pub(crate) paths: Vec<Regex>,
+    pub(crate) paths: Vec<MatchOnlyRegex>,
     pub(crate) stopwords: Vec<String>,
     pub(crate) condition: Condition,
 }
@@ -44,18 +44,154 @@ pub(crate) struct CompiledRuleAllowlist {
 pub(crate) struct CompiledGlobalAllowlist {
     #[allow(dead_code)] // Metadata; used by downstream specs for reporting.
     pub(crate) description: Option<String>,
-    pub(crate) regexes: Vec<Regex>,
-    pub(crate) paths: Vec<Regex>,
+    pub(crate) regexes: Vec<MatchOnlyRegex>,
+    pub(crate) paths: Vec<MatchOnlyRegex>,
     pub(crate) stopwords: Vec<String>,
 }
+
+/// Wrapper around content regexes that supports both eager compilation
+/// (existing `Scanner::new()` path) and cached DFA + lazy Regex
+/// (cache hit path).
+pub(crate) enum ContentRegex {
+    /// Eagerly compiled `regex::Regex` — the default construction path.
+    Eager(Regex),
+    /// Cached DFA bytes for fast `is_match()` + lazily compiled `Regex` for captures.
+    #[cfg(feature = "cache")]
+    Cached {
+        /// Serialized sparse DFA bytes for prefiltering.
+        dfa_bytes: Vec<u8>,
+        /// Original regex pattern (post `go_re2_compat`) for lazy `Regex` compilation.
+        pattern: String,
+        /// Lazily compiled `regex::Regex` for capture group extraction.
+        regex: std::sync::OnceLock<Regex>,
+    },
+    /// Pattern where DFA build failed; lazily compiles a `regex::Regex`.
+    #[cfg(feature = "cache")]
+    LazyOnly {
+        /// Original regex pattern (post `go_re2_compat`).
+        pattern: String,
+        /// Lazily compiled `regex::Regex`.
+        regex: std::sync::OnceLock<Regex>,
+    },
+}
+
+impl ContentRegex {
+    /// Returns `true` if the text matches this content regex.
+    pub(crate) fn is_match(&self, text: &str) -> bool {
+        match self {
+            ContentRegex::Eager(re) => re.is_match(text),
+            #[cfg(feature = "cache")]
+            ContentRegex::Cached { dfa_bytes, .. } => crate::cache::dfa_is_match(dfa_bytes, text),
+            #[cfg(feature = "cache")]
+            ContentRegex::LazyOnly { pattern, regex } => {
+                lazy_init_regex(pattern, regex).is_match(text)
+            }
+        }
+    }
+
+    /// Returns an iterator over successive non-overlapping capture matches.
+    ///
+    /// For `Cached` and `LazyOnly` variants, lazily compiles the `regex::Regex`
+    /// via `OnceLock::get_or_init()` on first call.
+    pub(crate) fn captures_iter<'r, 't>(&'r self, text: &'t str) -> regex::CaptureMatches<'r, 't> {
+        match self {
+            ContentRegex::Eager(re) => re.captures_iter(text),
+            #[cfg(feature = "cache")]
+            ContentRegex::Cached { pattern, regex, .. }
+            | ContentRegex::LazyOnly { pattern, regex } => {
+                lazy_init_regex(pattern, regex).captures_iter(text)
+            }
+        }
+    }
+}
+
+/// Lazily initializes a `Regex` from a pattern string and an `OnceLock`, using
+/// the crate's standard size limit. Used by cached `ContentRegex` variants to
+/// avoid compiling regexes until captures are actually needed.
+#[cfg(feature = "cache")]
+fn lazy_init_regex<'a>(pattern: &str, lock: &'a std::sync::OnceLock<Regex>) -> &'a Regex {
+    lock.get_or_init(|| {
+        regex::RegexBuilder::new(pattern)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .build()
+            .expect("cached pattern should compile")
+    })
+}
+
+impl fmt::Debug for ContentRegex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ContentRegex::Eager(re) => write!(f, "ContentRegex::Eager({:?})", re.as_str()),
+            #[cfg(feature = "cache")]
+            ContentRegex::Cached { pattern, .. } => {
+                write!(f, "ContentRegex::Cached({:?})", pattern)
+            }
+            #[cfg(feature = "cache")]
+            ContentRegex::LazyOnly { pattern, .. } => {
+                write!(f, "ContentRegex::LazyOnly({:?})", pattern)
+            }
+        }
+    }
+}
+
+// Compile-time assertion: ContentRegex must be Send + Sync.
+#[allow(dead_code)]
+const _: () = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    fn _check() {
+        assert_send_sync::<ContentRegex>();
+    }
+};
+
+/// Wrapper around path and allowlist regexes that only need `is_match()`
+/// (no capture groups). Supports eager compilation and DFA-backed matching.
+pub(crate) enum MatchOnlyRegex {
+    /// Eagerly compiled `regex::Regex` — the default construction path.
+    Eager(Regex),
+    /// Serialized sparse DFA bytes for fast `is_match()`.
+    #[cfg(feature = "cache")]
+    Dfa(Vec<u8>),
+}
+
+impl MatchOnlyRegex {
+    /// Returns `true` if the text matches this regex.
+    pub(crate) fn is_match(&self, text: &str) -> bool {
+        match self {
+            MatchOnlyRegex::Eager(re) => re.is_match(text),
+            #[cfg(feature = "cache")]
+            MatchOnlyRegex::Dfa(bytes) => crate::cache::dfa_is_match(bytes, text),
+        }
+    }
+}
+
+impl fmt::Debug for MatchOnlyRegex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MatchOnlyRegex::Eager(re) => write!(f, "MatchOnlyRegex::Eager({:?})", re.as_str()),
+            #[cfg(feature = "cache")]
+            MatchOnlyRegex::Dfa(bytes) => {
+                write!(f, "MatchOnlyRegex::Dfa({} bytes)", bytes.len())
+            }
+        }
+    }
+}
+
+// Compile-time assertion: MatchOnlyRegex must be Send + Sync.
+#[allow(dead_code)]
+const _: () = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    fn _check() {
+        assert_send_sync::<MatchOnlyRegex>();
+    }
+};
 
 /// A fully compiled detection rule.
 #[derive(Debug)]
 pub(crate) struct CompiledRule {
     pub(crate) id: String,
     pub(crate) description: String,
-    pub(crate) content_regex: Option<Regex>,
-    pub(crate) path_regex: Option<Regex>,
+    pub(crate) content_regex: Option<ContentRegex>,
+    pub(crate) path_regex: Option<MatchOnlyRegex>,
     pub(crate) entropy: Option<f64>,
     pub(crate) secret_group: Option<usize>,
     pub(crate) keywords: Vec<String>,
@@ -147,6 +283,54 @@ impl Scanner {
         })
     }
 
+    /// Construct a `Scanner` using the default embedded config with disk-based
+    /// DFA caching for near-instant startup on cache hit.
+    ///
+    /// Always uses [`Config::default()`] (the embedded 222-rule config). On the
+    /// first call, compiles all regexes normally and writes a cache file to
+    /// `cache_path`. On subsequent calls with the same cache file, loads
+    /// pre-compiled DFAs from disk — avoiding regex compilation entirely.
+    ///
+    /// Cache files are **endian-dependent** (native endian) and not portable
+    /// across architectures.
+    ///
+    /// # Fallback Behavior
+    ///
+    /// On any cache failure (corrupt file, version mismatch, I/O error), this
+    /// method silently falls back to `Scanner::new(Config::default())`. Cache
+    /// write failures after a miss are silently ignored.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use gitleaks_rs::Scanner;
+    ///
+    /// let scanner = Scanner::new_with_cache("/tmp/gitleaks.cache").unwrap();
+    /// let findings = scanner.scan_text("AKIAIOSFODNN7EXAMPLE", None);
+    /// ```
+    #[cfg(feature = "cache")]
+    pub fn new_with_cache(cache_path: impl AsRef<Path>) -> Result<Self> {
+        let cache_path = cache_path.as_ref();
+        let config_hash = crate::cache::compute_config_hash();
+
+        // Try loading from cache first.
+        match crate::cache::try_load(cache_path, &config_hash) {
+            Ok(scanner) => return Ok(scanner),
+            Err(_) => {
+                // Cache miss or failure — fall through to full compilation.
+            }
+        }
+
+        // Full compilation.
+        let config = Config::default()?;
+        let scanner = Scanner::new(config.clone())?;
+
+        // Best-effort cache write — silently ignore any I/O errors.
+        let _ = crate::cache::try_save(cache_path, &config_hash, &scanner, &config);
+
+        Ok(scanner)
+    }
+
     /// Total number of compiled rules (including path-only rules).
     pub fn rule_count(&self) -> usize {
         self.rules.len()
@@ -233,30 +417,37 @@ impl Scanner {
                 }
             }
 
-            // Step 3: regex match loop — evaluate all matches in the line.
+            // Step 3: DFA prefilter — skip rule if content regex doesn't match.
+            // For the Eager variant this is redundant with captures_iter, but
+            // for future Cached variants the DFA is_match is much faster.
+            if !content_regex.is_match(line) {
+                continue;
+            }
+
+            // Step 4: regex match loop — evaluate all matches in the line.
             for caps in content_regex.captures_iter(line) {
                 let full_match = caps.get(0).unwrap();
                 let match_text = full_match.as_str();
 
-                // Step 4: secret group extraction.
+                // Step 5: secret group extraction.
                 let secret = extract_secret(rule, &caps, match_text);
 
-                // Step 5: entropy check.
+                // Step 6: entropy check.
                 if !entropy::passes_entropy_check(&secret, rule.entropy) {
                     continue;
                 }
 
-                // Step 6: global allowlist check.
+                // Step 7: global allowlist check.
                 if self.is_globally_allowlisted(&secret) {
                     continue;
                 }
 
-                // Step 7: per-rule allowlist check.
+                // Step 8: per-rule allowlist check.
                 if is_rule_allowlisted(rule, &secret, match_text, line, path) {
                     continue;
                 }
 
-                // Step 8: emit finding.
+                // Step 9: emit finding.
                 let measured_entropy = if rule.entropy.is_some() {
                     Some(entropy::shannon_entropy(&secret))
                 } else {
@@ -572,11 +763,12 @@ fn compile_regex_with_context(pattern: &str, context: &str) -> Result<Regex> {
         .map_err(|e| Error::Validation(format!("{context}: {e}")))
 }
 
-/// Compile a list of regex patterns, failing on the first invalid pattern.
-fn compile_regex_list(patterns: &[String], context: &str) -> Result<Vec<Regex>> {
+/// Compile a list of regex patterns into `MatchOnlyRegex::Eager` wrappers,
+/// failing on the first invalid pattern.
+fn compile_regex_list(patterns: &[String], context: &str) -> Result<Vec<MatchOnlyRegex>> {
     patterns
         .iter()
-        .map(|p| compile_regex_with_context(p, context))
+        .map(|p| compile_regex_with_context(p, context).map(MatchOnlyRegex::Eager))
         .collect()
 }
 
@@ -586,7 +778,7 @@ fn compile_regex_list(patterns: &[String], context: &str) -> Result<Vec<Regex>> 
 /// by a valid quantifier (`{n}`, `{n,}`, or `{n,m}`). Rust's regex crate is
 /// stricter and raises an error for bare `{`. This function escapes bare `{`
 /// to `\{` when it does not start a valid quantifier.
-fn go_re2_compat(pattern: &str) -> Cow<'_, str> {
+pub(crate) fn go_re2_compat(pattern: &str) -> Cow<'_, str> {
     if !pattern.contains('{') {
         return Cow::Borrowed(pattern);
     }
@@ -692,13 +884,19 @@ fn compile_rule(rule: &crate::config::Rule) -> Result<CompiledRule> {
     let content_regex = rule
         .regex
         .as_deref()
-        .map(|p| compile_regex_with_context(p, &format!("{ctx}: invalid content regex")))
+        .map(|p| {
+            compile_regex_with_context(p, &format!("{ctx}: invalid content regex"))
+                .map(ContentRegex::Eager)
+        })
         .transpose()?;
 
     let path_regex = rule
         .path
         .as_deref()
-        .map(|p| compile_regex_with_context(p, &format!("{ctx}: invalid path regex")))
+        .map(|p| {
+            compile_regex_with_context(p, &format!("{ctx}: invalid path regex"))
+                .map(MatchOnlyRegex::Eager)
+        })
         .transpose()?;
 
     let allowlists = rule
@@ -757,7 +955,7 @@ fn compile_global_allowlist(al: &Allowlist) -> Result<CompiledGlobalAllowlist> {
 ///
 /// Rules are classified as "path-only" (excluded from keyword-based content
 /// scanning) if they lack a `content_regex` or have no keywords.
-fn build_keyword_index(
+pub(crate) fn build_keyword_index(
     rules: &[CompiledRule],
 ) -> Result<(AhoCorasick, Vec<Vec<usize>>, Vec<usize>)> {
     let mut keyword_to_index: HashMap<String, usize> = HashMap::new();
@@ -3048,5 +3246,469 @@ keywords = ["key"]
         assert!(result.redaction_count >= 1);
         // Content should still make sense (no double-replacement gibberish).
         assert!(!result.content.contains("WIDE_ABCDEFGHIJ0123456789"));
+    }
+
+    // ----- ContentRegex wrapper tests -----
+
+    #[test]
+    fn content_regex_eager_is_match() {
+        let re = Regex::new(r"secret_[a-z]+").unwrap();
+        let cr = ContentRegex::Eager(re);
+        assert!(cr.is_match("my secret_key here"));
+        assert!(!cr.is_match("no match here"));
+    }
+
+    #[test]
+    fn content_regex_eager_captures_iter() {
+        let re = Regex::new(r"(key)_(\d+)").unwrap();
+        let cr = ContentRegex::Eager(re);
+
+        let caps: Vec<_> = cr.captures_iter("key_1 and key_42").collect();
+        assert_eq!(caps.len(), 2);
+
+        // First match
+        assert_eq!(caps[0].get(0).unwrap().as_str(), "key_1");
+        assert_eq!(caps[0].get(1).unwrap().as_str(), "key");
+        assert_eq!(caps[0].get(2).unwrap().as_str(), "1");
+
+        // Second match
+        assert_eq!(caps[1].get(0).unwrap().as_str(), "key_42");
+        assert_eq!(caps[1].get(1).unwrap().as_str(), "key");
+        assert_eq!(caps[1].get(2).unwrap().as_str(), "42");
+    }
+
+    #[test]
+    fn content_regex_eager_debug() {
+        let re = Regex::new(r"secret_[a-z]+").unwrap();
+        let cr = ContentRegex::Eager(re);
+        let debug = format!("{:?}", cr);
+        assert!(
+            debug.contains("ContentRegex::Eager"),
+            "expected variant name in debug output: {debug}"
+        );
+        assert!(
+            debug.contains("secret_"),
+            "expected pattern text in debug output: {debug}"
+        );
+    }
+
+    // ----- MatchOnlyRegex wrapper tests -----
+
+    #[test]
+    fn match_only_regex_eager_is_match() {
+        let re = Regex::new(r"\.go$").unwrap();
+        let mr = MatchOnlyRegex::Eager(re);
+
+        // Positive match
+        assert!(mr.is_match("main.go"));
+        assert!(mr.is_match("path/to/file.go"));
+
+        // Negative match
+        assert!(!mr.is_match("main.rs"));
+        assert!(!mr.is_match(""));
+        assert!(!mr.is_match("go"));
+    }
+
+    #[test]
+    fn match_only_regex_eager_is_match_with_metacharacters() {
+        let re = Regex::new(r"secret\[\d+\]").unwrap();
+        let mr = MatchOnlyRegex::Eager(re);
+
+        assert!(mr.is_match("secret[42]"));
+        assert!(mr.is_match("prefix secret[0] suffix"));
+        assert!(!mr.is_match("secret[]"));
+        assert!(!mr.is_match("secret[abc]"));
+    }
+
+    #[test]
+    fn match_only_regex_eager_is_match_dot_pattern() {
+        // Dot matches any character — verify semantics inherited from regex::Regex
+        let re = Regex::new(r".").unwrap();
+        let mr = MatchOnlyRegex::Eager(re);
+
+        assert!(mr.is_match("x"));
+        assert!(mr.is_match(" "));
+        assert!(!mr.is_match(""));
+    }
+
+    #[test]
+    fn match_only_regex_eager_debug() {
+        let re = Regex::new(r"\.go$").unwrap();
+        let mr = MatchOnlyRegex::Eager(re);
+        let debug = format!("{:?}", mr);
+        assert!(
+            debug.contains("MatchOnlyRegex::Eager"),
+            "expected variant name in debug output: {debug}"
+        );
+        assert!(
+            debug.contains(r"\.go"),
+            "expected pattern fragment in debug output: {debug}"
+        );
+    }
+
+    // ----- MatchOnlyRegex Dfa variant tests -----
+
+    #[cfg(feature = "cache")]
+    mod match_only_regex_dfa {
+        use super::*;
+        use crate::cache::try_build_sparse_dfa;
+
+        #[test]
+        fn dfa_is_match_with_valid_dfa() {
+            let pattern = r"\.go$";
+            let dfa_bytes = try_build_sparse_dfa(pattern).expect("DFA should build");
+            let mr = MatchOnlyRegex::Dfa(dfa_bytes);
+
+            // Positive matches
+            assert!(mr.is_match("main.go"));
+            assert!(mr.is_match("path/to/file.go"));
+
+            // Negative matches
+            assert!(!mr.is_match("main.rs"));
+            assert!(!mr.is_match(""));
+            assert!(!mr.is_match("go"));
+        }
+
+        #[test]
+        fn dfa_is_match_agrees_with_eager() {
+            // DFA and eager regex must agree on match results.
+            let pattern = r"secret\[\d+\]";
+            let dfa_bytes = try_build_sparse_dfa(pattern).expect("DFA should build");
+            let dfa_mr = MatchOnlyRegex::Dfa(dfa_bytes);
+            let eager_mr = MatchOnlyRegex::Eager(Regex::new(pattern).unwrap());
+
+            let cases = [
+                "secret[42]",
+                "prefix secret[0] suffix",
+                "secret[]",
+                "secret[abc]",
+                "no match",
+                "",
+            ];
+            for text in &cases {
+                assert_eq!(
+                    dfa_mr.is_match(text),
+                    eager_mr.is_match(text),
+                    "DFA/eager disagreement for: {text:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn dfa_is_match_with_invalid_dfa_bytes() {
+            // Corrupt DFA bytes must return false (graceful fallback), not panic.
+            let mr = MatchOnlyRegex::Dfa(vec![0, 1, 2, 3]);
+            assert!(!mr.is_match("anything"));
+            assert!(!mr.is_match("main.go"));
+            assert!(!mr.is_match(""));
+        }
+
+        #[test]
+        fn dfa_is_match_with_empty_dfa_bytes() {
+            // Empty byte slice must not panic, just return false.
+            let mr = MatchOnlyRegex::Dfa(vec![]);
+            assert!(!mr.is_match("anything"));
+            assert!(!mr.is_match(""));
+        }
+
+        #[test]
+        fn dfa_debug_output() {
+            let pattern = r"\.go$";
+            let dfa_bytes = try_build_sparse_dfa(pattern).expect("DFA should build");
+            let byte_count = dfa_bytes.len();
+            let mr = MatchOnlyRegex::Dfa(dfa_bytes);
+            let debug = format!("{:?}", mr);
+            assert!(
+                debug.contains("MatchOnlyRegex::Dfa"),
+                "expected variant name in debug output: {debug}"
+            );
+            assert!(
+                debug.contains(&format!("{byte_count} bytes")),
+                "expected byte count in debug output: {debug}"
+            );
+        }
+
+        #[test]
+        fn dfa_repeated_calls_stable() {
+            // Repeated is_match() calls must be deterministic.
+            let pattern = r"test_\w+";
+            let dfa_bytes = try_build_sparse_dfa(pattern).expect("DFA should build");
+            let mr = MatchOnlyRegex::Dfa(dfa_bytes);
+
+            for _ in 0..10 {
+                assert!(mr.is_match("test_abc"));
+                assert!(!mr.is_match("no match"));
+            }
+        }
+    }
+
+    // ----- ContentRegex cached variant tests -----
+
+    #[cfg(feature = "cache")]
+    mod cached_content_regex {
+        use super::*;
+        use crate::cache::try_build_sparse_dfa;
+        use std::sync::OnceLock;
+
+        #[test]
+        fn cached_is_match_with_valid_dfa() {
+            let pattern = r"secret_[a-z]+";
+            let dfa_bytes = try_build_sparse_dfa(pattern).expect("DFA should build");
+            let cr = ContentRegex::Cached {
+                dfa_bytes,
+                pattern: pattern.to_string(),
+                regex: OnceLock::new(),
+            };
+            assert!(cr.is_match("my secret_key here"));
+            assert!(!cr.is_match("no match here"));
+        }
+
+        #[test]
+        fn cached_is_match_with_invalid_dfa_bytes() {
+            // Invalid DFA bytes should return false (graceful fallback), not panic.
+            let cr = ContentRegex::Cached {
+                dfa_bytes: vec![0, 1, 2, 3],
+                pattern: r"secret_[a-z]+".to_string(),
+                regex: OnceLock::new(),
+            };
+            assert!(!cr.is_match("my secret_key here"));
+        }
+
+        #[test]
+        fn cached_is_match_with_empty_dfa_bytes() {
+            // Empty byte slice should not panic, just return false.
+            let cr = ContentRegex::Cached {
+                dfa_bytes: vec![],
+                pattern: r"secret".to_string(),
+                regex: OnceLock::new(),
+            };
+            assert!(!cr.is_match("secret here"));
+        }
+
+        #[test]
+        fn cached_captures_iter_lazily_compiles() {
+            let pattern = r"(key)_(\d+)";
+            let dfa_bytes = try_build_sparse_dfa(pattern).expect("DFA should build");
+            let cr = ContentRegex::Cached {
+                dfa_bytes,
+                pattern: pattern.to_string(),
+                regex: OnceLock::new(),
+            };
+
+            let caps: Vec<_> = cr.captures_iter("key_1 and key_42").collect();
+            assert_eq!(caps.len(), 2);
+            assert_eq!(caps[0].get(0).unwrap().as_str(), "key_1");
+            assert_eq!(caps[0].get(1).unwrap().as_str(), "key");
+            assert_eq!(caps[0].get(2).unwrap().as_str(), "1");
+            assert_eq!(caps[1].get(0).unwrap().as_str(), "key_42");
+            assert_eq!(caps[1].get(1).unwrap().as_str(), "key");
+            assert_eq!(caps[1].get(2).unwrap().as_str(), "42");
+        }
+
+        #[test]
+        fn cached_is_match_agrees_with_captures_iter() {
+            // DFA-based is_match and lazy regex captures_iter must agree.
+            let pattern = r"api[_-]?key[:\s]*[A-Za-z0-9]{16,}";
+            let dfa_bytes = try_build_sparse_dfa(pattern).expect("DFA should build");
+            let cr = ContentRegex::Cached {
+                dfa_bytes,
+                pattern: pattern.to_string(),
+                regex: OnceLock::new(),
+            };
+
+            let cases = [
+                ("api_key: ABCDEFGHIJ0123456789", true),
+                ("apikey:abc123", false),
+                ("no secret here", false),
+            ];
+            for (text, expected) in &cases {
+                assert_eq!(
+                    cr.is_match(text),
+                    *expected,
+                    "is_match mismatch for: {text}"
+                );
+                let has_captures = cr.captures_iter(text).next().is_some();
+                assert_eq!(
+                    has_captures, *expected,
+                    "captures_iter mismatch for: {text}"
+                );
+            }
+        }
+
+        #[test]
+        fn cached_debug_output() {
+            let cr = ContentRegex::Cached {
+                dfa_bytes: vec![],
+                pattern: "secret_[a-z]+".to_string(),
+                regex: OnceLock::new(),
+            };
+            let debug = format!("{:?}", cr);
+            assert!(
+                debug.contains("ContentRegex::Cached"),
+                "expected variant name in debug output: {debug}"
+            );
+            assert!(
+                debug.contains("secret_"),
+                "expected pattern text in debug output: {debug}"
+            );
+        }
+
+        #[test]
+        fn lazy_only_is_match() {
+            let cr = ContentRegex::LazyOnly {
+                pattern: r"secret_[a-z]+".to_string(),
+                regex: OnceLock::new(),
+            };
+            assert!(cr.is_match("my secret_key here"));
+            assert!(!cr.is_match("no match here"));
+        }
+
+        #[test]
+        fn lazy_only_captures_iter() {
+            let cr = ContentRegex::LazyOnly {
+                pattern: r"(key)_(\d+)".to_string(),
+                regex: OnceLock::new(),
+            };
+
+            let caps: Vec<_> = cr.captures_iter("key_1 and key_42").collect();
+            assert_eq!(caps.len(), 2);
+            assert_eq!(caps[0].get(0).unwrap().as_str(), "key_1");
+            assert_eq!(caps[0].get(1).unwrap().as_str(), "key");
+            assert_eq!(caps[0].get(2).unwrap().as_str(), "1");
+            assert_eq!(caps[1].get(0).unwrap().as_str(), "key_42");
+        }
+
+        #[test]
+        fn lazy_only_debug_output() {
+            let cr = ContentRegex::LazyOnly {
+                pattern: "secret_[a-z]+".to_string(),
+                regex: OnceLock::new(),
+            };
+            let debug = format!("{:?}", cr);
+            assert!(
+                debug.contains("ContentRegex::LazyOnly"),
+                "expected variant name in debug output: {debug}"
+            );
+            assert!(
+                debug.contains("secret_"),
+                "expected pattern text in debug output: {debug}"
+            );
+        }
+
+        #[test]
+        fn lazy_only_repeated_calls_stable() {
+            // OnceLock initializes once; repeated calls should be stable.
+            let cr = ContentRegex::LazyOnly {
+                pattern: r"(tok)_(\w+)".to_string(),
+                regex: OnceLock::new(),
+            };
+            assert!(cr.is_match("tok_abc"));
+            assert!(cr.is_match("tok_xyz"));
+            assert!(!cr.is_match("no match"));
+
+            // Captures should work correctly after repeated is_match calls.
+            let caps: Vec<_> = cr.captures_iter("tok_one tok_two").collect();
+            assert_eq!(caps.len(), 2);
+        }
+    }
+
+    // ----- new_with_cache constructor tests -----
+
+    #[cfg(feature = "cache")]
+    mod new_with_cache_tests {
+        use super::*;
+        use std::path::PathBuf;
+
+        fn unique_cache_path(name: &str) -> PathBuf {
+            std::env::temp_dir()
+                .join("gitleaks_rs_scanner_nwc_test")
+                .join(format!("{name}.cache"))
+        }
+
+        fn setup_dir(name: &str) -> PathBuf {
+            let path = unique_cache_path(name);
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::remove_file(&path);
+            path
+        }
+
+        #[test]
+        fn new_with_cache_cold_start_succeeds() {
+            let cache_path = setup_dir("cold_start");
+            let scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(
+                scanner.rule_count() > 200,
+                "expected 222+ rules from default config"
+            );
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_creates_cache_file() {
+            let cache_path = setup_dir("creates_file");
+            assert!(!cache_path.exists());
+            let _scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(
+                cache_path.exists(),
+                "cache file should be created on cold start"
+            );
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_hot_start_loads_from_cache() {
+            let cache_path = setup_dir("hot_start");
+            // Cold start: creates cache
+            let _scanner1 = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(cache_path.exists());
+
+            // Hot start: loads from cache
+            let scanner2 = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(scanner2.rule_count() > 200);
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_finds_secrets() {
+            let cache_path = setup_dir("finds_secrets");
+            let scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            let findings = scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
+            assert!(!findings.is_empty(), "should detect AWS key");
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_corrupt_file_fallback() {
+            let cache_path = setup_dir("corrupt_fallback");
+            // Write garbage to cache path
+            std::fs::write(&cache_path, b"not a valid cache file").unwrap();
+
+            // Should fall back to full compilation without error
+            let scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(scanner.rule_count() > 200);
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_missing_parent_dir_fallback() {
+            // Parent directory doesn't exist — save will fail, but constructor succeeds
+            let path = PathBuf::from("/tmp/gitleaks_rs_nonexistent_parent_dir_test/sub/cache.bin");
+            let scanner = Scanner::new_with_cache(&path).unwrap();
+            assert!(scanner.rule_count() > 200);
+        }
+
+        #[test]
+        fn new_with_cache_uses_default_config() {
+            let cache_path = setup_dir("default_config");
+            let scanner_cached = Scanner::new_with_cache(&cache_path).unwrap();
+            let config = Config::default().unwrap();
+            let scanner_eager = Scanner::new(config).unwrap();
+            assert_eq!(
+                scanner_cached.rule_count(),
+                scanner_eager.rule_count(),
+                "cached scanner should have same rule count as eager scanner"
+            );
+            let _ = std::fs::remove_file(&cache_path);
+        }
     }
 }

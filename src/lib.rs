@@ -111,6 +111,10 @@ pub mod redact;
 /// Precompiled rule engine for secret detection.
 pub mod scanner;
 
+/// Disk-based DFA cache for near-instant `Scanner` construction.
+#[cfg(feature = "cache")]
+pub(crate) mod cache;
+
 pub use builder::ConfigBuilder;
 pub use config::{
     Allowlist, Condition, Config, RegexTarget, Rule, RuleAllowlist, GITLEAKS_CONFIG_VERSION,
