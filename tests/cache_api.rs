@@ -99,15 +99,15 @@ fn cold_start_lifecycle_and_parity() {
     );
 
     // --- scan_text parity: AWS key ---
-    let aws_text = "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n";
+    let aws_text = "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7ZZZABCD\n";
     let cached_f = cached.scan_text(aws_text, None);
     let eager_f = eager.scan_text(aws_text, None);
     assert_findings_eq(&cached_f, &eager_f, "aws_key");
 
-    // --- scan_text parity: multiple secrets ---
+    // --- scan_text parity: multiple secrets (AWS, GitHub PAT) ---
     let multi_text = concat!(
-        "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01\n",
-        "AKIAIOSFODNN7EXAMPLE\n",
+        "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n",
+        "AKIAIOSFODNN7ZZZABCD\n",
         "just regular text\n",
     );
     let cached_f2 = cached.scan_text(multi_text, None);
@@ -130,16 +130,16 @@ fn cold_start_lifecycle_and_parity() {
         cached_r.redaction_count, eager_r.redaction_count,
         "redaction count should match"
     );
-    assert!(!cached_r.content.contains("AKIAIOSFODNN7EXAMPLE"));
+    assert!(!cached_r.content.contains("AKIAIOSFODNN7ZZZABCD"));
 
     // --- redact_text_with custom replacement parity ---
-    let cached_rc = cached.redact_text_with("AKIAIOSFODNN7EXAMPLE\n", None, "***");
-    let eager_rc = eager.redact_text_with("AKIAIOSFODNN7EXAMPLE\n", None, "***");
+    let cached_rc = cached.redact_text_with("AKIAIOSFODNN7ZZZABCD\n", None, "***");
+    let eager_rc = eager.redact_text_with("AKIAIOSFODNN7ZZZABCD\n", None, "***");
     assert_eq!(cached_rc.content, eager_rc.content);
     assert_eq!(cached_rc.redaction_count, eager_rc.redaction_count);
 
     // --- path-filtered scan_text parity ---
-    let secret_line = "AKIAIOSFODNN7EXAMPLE\n";
+    let secret_line = "AKIAIOSFODNN7ZZZABCD\n";
     let cached_go = cached.scan_text(secret_line, Some("main.go"));
     let eager_go = eager.scan_text(secret_line, Some("main.go"));
     assert_findings_eq(&cached_go, &eager_go, "path_filter .go");
@@ -153,8 +153,8 @@ fn cold_start_lifecycle_and_parity() {
     let secret_file = dir.join("secret.txt");
     {
         let mut f = std::fs::File::create(&secret_file).unwrap();
-        writeln!(f, "AKIAIOSFODNN7EXAMPLE").unwrap();
-        writeln!(f, "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01").unwrap();
+        writeln!(f, "AKIAIOSFODNN7ZZZABCD").unwrap();
+        writeln!(f, "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij").unwrap();
     }
     let clean_file = dir.join("clean.txt");
     {
@@ -194,14 +194,14 @@ fn hot_start_parity() {
     assert_eq!(hot.rule_count(), cold.rule_count());
 
     // Verify hot-start scanner detects secrets
-    let findings = hot.scan_text("AKIAIOSFODNN7EXAMPLE", None);
+    let findings = hot.scan_text("AKIAIOSFODNN7ZZZABCD", None);
     assert!(!findings.is_empty(), "hot-start should detect AWS key");
 
     // Parity between hot-start and eager
     let eager_config = Config::default().unwrap();
     let eager = Scanner::new(eager_config).unwrap();
 
-    let text = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01\n";
+    let text = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n";
     let hot_f = hot.scan_text(text, None);
     let eager_f = eager.scan_text(text, None);
     assert_findings_eq(&hot_f, &eager_f, "hot_cache");
@@ -234,7 +234,7 @@ fn fallback_and_resilience() {
         "corrupt cache should fall back to full compilation"
     );
     // Verify the fallback scanner actually works
-    let findings = scanner.scan_text("AKIAIOSFODNN7EXAMPLE", None);
+    let findings = scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
     assert!(
         !findings.is_empty(),
         "fallback scanner should detect secrets"
@@ -252,16 +252,50 @@ fn fallback_and_resilience() {
 
     // --- Truncated cache (10 bytes, shorter than 58-byte header) ---
     let path2 = cache_path("fallback_trunc");
-    std::fs::write(&path2, &[0u8; 10]).unwrap();
-    // Reuse the first scanner to verify truncated cache doesn't crash
-    // (just verify constructor returns Ok)
-    assert!(Scanner::new_with_cache(&path2).is_ok());
+    std::fs::write(&path2, [0u8; 10]).unwrap();
+    let trunc_scanner = Scanner::new_with_cache(&path2).unwrap();
+    assert!(
+        trunc_scanner.rule_count() > 200,
+        "truncated fallback should compile all rules"
+    );
+    let trunc_findings = trunc_scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
+    assert!(
+        !trunc_findings.is_empty(),
+        "truncated fallback scanner should detect secrets"
+    );
+    let trunc_redact = trunc_scanner.redact_text("AKIAIOSFODNN7ZZZABCD\n", None);
+    assert!(
+        trunc_redact.redaction_count > 0,
+        "truncated fallback scanner should redact secrets"
+    );
+    assert!(
+        !trunc_redact.content.contains("AKIAIOSFODNN7ZZZABCD"),
+        "truncated fallback redaction should remove secret"
+    );
     let _ = std::fs::remove_file(&path2);
 
     // --- Zero-byte file ---
     let path3 = cache_path("fallback_empty");
     std::fs::write(&path3, b"").unwrap();
-    assert!(Scanner::new_with_cache(&path3).is_ok());
+    let empty_scanner = Scanner::new_with_cache(&path3).unwrap();
+    assert!(
+        empty_scanner.rule_count() > 200,
+        "empty fallback should compile all rules"
+    );
+    let empty_findings = empty_scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
+    assert!(
+        !empty_findings.is_empty(),
+        "empty fallback scanner should detect secrets"
+    );
+    let empty_redact = empty_scanner.redact_text("AKIAIOSFODNN7ZZZABCD\n", None);
+    assert!(
+        empty_redact.redaction_count > 0,
+        "empty fallback scanner should redact secrets"
+    );
+    assert!(
+        !empty_redact.content.contains("AKIAIOSFODNN7ZZZABCD"),
+        "empty fallback redaction should remove secret"
+    );
     let _ = std::fs::remove_file(&path3);
 
     // --- Wrong magic bytes ---
@@ -269,16 +303,39 @@ fn fallback_and_resilience() {
     let mut data = vec![0u8; 62];
     data[0..8].copy_from_slice(b"WRONGMAG");
     std::fs::write(&path4, &data).unwrap();
-    assert!(Scanner::new_with_cache(&path4).is_ok());
+    let magic_scanner = Scanner::new_with_cache(&path4).unwrap();
+    assert!(
+        magic_scanner.rule_count() > 200,
+        "wrong-magic fallback should compile all rules"
+    );
+    let magic_findings = magic_scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
+    assert!(
+        !magic_findings.is_empty(),
+        "wrong-magic fallback scanner should detect secrets"
+    );
+    let magic_redact = magic_scanner.redact_text("AKIAIOSFODNN7ZZZABCD\n", None);
+    assert!(
+        magic_redact.redaction_count > 0,
+        "wrong-magic fallback scanner should redact secrets"
+    );
+    assert!(
+        !magic_redact.content.contains("AKIAIOSFODNN7ZZZABCD"),
+        "wrong-magic fallback redaction should remove secret"
+    );
     let _ = std::fs::remove_file(&path4);
 
     // --- Missing parent directory ---
     let missing_path = PathBuf::from("/tmp/gitleaks_rs_cache_api_no_parent/deep/nested/cache.bin");
     let _ = std::fs::remove_dir_all("/tmp/gitleaks_rs_cache_api_no_parent");
-    assert!(Scanner::new_with_cache(&missing_path).is_ok());
+    let missing_scanner = Scanner::new_with_cache(&missing_path).unwrap();
     assert!(
         !missing_path.exists(),
         "cache file should NOT exist when parent dir is missing"
+    );
+    let missing_findings = missing_scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
+    assert!(
+        !missing_findings.is_empty(),
+        "missing-parent fallback scanner should detect secrets"
     );
 
     // --- Path is a directory, not a file ---
@@ -286,7 +343,12 @@ fn fallback_and_resilience() {
     let _ = std::fs::remove_file(&dir_path);
     let _ = std::fs::remove_dir_all(&dir_path);
     std::fs::create_dir_all(&dir_path).unwrap();
-    assert!(Scanner::new_with_cache(&dir_path).is_ok());
+    let dir_scanner = Scanner::new_with_cache(&dir_path).unwrap();
+    let dir_findings = dir_scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
+    assert!(
+        !dir_findings.is_empty(),
+        "dir-as-file fallback scanner should detect secrets"
+    );
     let _ = std::fs::remove_dir_all(&dir_path);
 
     // --- Read-only directory (Unix) ---
@@ -296,8 +358,132 @@ fn fallback_and_resilience() {
         let dir = temp_dir("readonly_dir");
         let ro_path = dir.join("cache.bin");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o444)).unwrap();
-        assert!(Scanner::new_with_cache(&ro_path).is_ok());
+        let ro_scanner = Scanner::new_with_cache(&ro_path).unwrap();
+        let ro_findings = ro_scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
+        assert!(
+            !ro_findings.is_empty(),
+            "read-only-dir fallback scanner should detect secrets"
+        );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Allowlist, entropy filtering, and path regex parity
+//
+// Covers spec-14 acceptance criteria for allowlist filtering, entropy
+// filtering, path-only rules (pkcs12-file), and global path allowlists.
+// Verifies cached and eager scanners produce identical results.
+// Total compilations: 2 (cold + eager)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn allowlist_entropy_path_parity() {
+    let path = cache_path("aep_parity");
+    let cached = Scanner::new_with_cache(&path).unwrap();
+    let eager_config = Config::default().unwrap();
+    let eager = Scanner::new(eager_config).unwrap();
+
+    // --- Allowlist parity ---
+    // Text with a mix of detectable and potentially-allowlisted patterns.
+    // Both scanners must produce identical findings regardless of which
+    // findings are suppressed by global or per-rule allowlists.
+    let allowlist_text = concat!(
+        "AKIAIOSFODNN7ZZZABCD\n",
+        "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n",
+        "export API_KEY=some_config_variable_name\n",
+        "password = true\n",
+        "token = abcdefghijklmnopqrstuvwxyz\n",
+    );
+    let cached_al = cached.scan_text(allowlist_text, None);
+    let eager_al = eager.scan_text(allowlist_text, None);
+    assert_findings_eq(&cached_al, &eager_al, "allowlist");
+    assert!(
+        !cached_al.is_empty(),
+        "should detect at least one secret in allowlist text"
+    );
+
+    // --- Entropy parity ---
+    // adobe-client-id has entropy threshold of 2.0.
+    // Low-entropy hex (all 'a') should be suppressed; high-entropy hex should pass.
+    // Both scanners must agree on which findings survive entropy filtering.
+    let entropy_text = concat!(
+        "adobe_client_id = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "adobe_client_id = a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6\n",
+    );
+    let cached_ent = cached.scan_text(entropy_text, None);
+    let eager_ent = eager.scan_text(entropy_text, None);
+    assert_findings_eq(&cached_ent, &eager_ent, "entropy");
+
+    // --- Path-only rule parity (pkcs12-file rule) ---
+    let dir = temp_dir("aep_parity_files");
+
+    // .p12 extension triggers the pkcs12-file path-only rule
+    let p12_file = dir.join("keystore.p12");
+    std::fs::write(&p12_file, "not a real pkcs12 file").unwrap();
+    let cached_p12 = cached.scan_file(&p12_file).unwrap();
+    let eager_p12 = eager.scan_file(&p12_file).unwrap();
+    assert_findings_eq(&cached_p12, &eager_p12, "path_only_p12");
+    assert!(
+        !cached_p12.is_empty(),
+        ".p12 should trigger path-only rule (cached)"
+    );
+    assert_eq!(cached_p12[0].rule_id, "pkcs12-file");
+
+    // .pfx also matches pkcs12-file rule
+    let pfx_file = dir.join("cert.pfx");
+    std::fs::write(&pfx_file, "pfx content").unwrap();
+    let cached_pfx = cached.scan_file(&pfx_file).unwrap();
+    let eager_pfx = eager.scan_file(&pfx_file).unwrap();
+    assert_findings_eq(&cached_pfx, &eager_pfx, "path_only_pfx");
+    assert!(!cached_pfx.is_empty(), ".pfx should trigger path-only rule");
+
+    // Regular .txt file should not trigger path-only rule
+    let txt_file = dir.join("readme.txt");
+    std::fs::write(&txt_file, "just text, no secrets here").unwrap();
+    let cached_txt = cached.scan_file(&txt_file).unwrap();
+    let eager_txt = eager.scan_file(&txt_file).unwrap();
+    assert_eq!(
+        cached_txt.len(),
+        0,
+        "clean .txt should have no findings (cached)"
+    );
+    assert_eq!(
+        eager_txt.len(),
+        0,
+        "clean .txt should have no findings (eager)"
+    );
+
+    // --- Global path allowlist parity ---
+    // .png matches global path allowlist → entire file skipped, even with secrets
+    let png_file = dir.join("image.png");
+    std::fs::write(&png_file, "AKIAIOSFODNN7ZZZABCD").unwrap();
+    let cached_png = cached.scan_file(&png_file).unwrap();
+    let eager_png = eager.scan_file(&png_file).unwrap();
+    assert_eq!(cached_png.len(), 0, ".png is globally allowlisted (cached)");
+    assert_eq!(eager_png.len(), 0, ".png is globally allowlisted (eager)");
+
+    // .pdf matches global path allowlist
+    let pdf_file = dir.join("report.pdf");
+    std::fs::write(&pdf_file, "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij").unwrap();
+    let cached_pdf = cached.scan_file(&pdf_file).unwrap();
+    let eager_pdf = eager.scan_file(&pdf_file).unwrap();
+    assert_eq!(cached_pdf.len(), 0, ".pdf is globally allowlisted (cached)");
+    assert_eq!(eager_pdf.len(), 0, ".pdf is globally allowlisted (eager)");
+
+    // --- scan_file with secret content + non-allowlisted path ---
+    let env_file = dir.join("config.env");
+    {
+        let mut f = std::fs::File::create(&env_file).unwrap();
+        writeln!(f, "AWS_KEY=AKIAIOSFODNN7ZZZABCD").unwrap();
+        writeln!(f, "CLEAN_LINE=nothing_here").unwrap();
+    }
+    let cached_env = cached.scan_file(&env_file).unwrap();
+    let eager_env = eager.scan_file(&env_file).unwrap();
+    assert_findings_eq(&cached_env, &eager_env, "scan_file_env");
+    assert!(!cached_env.is_empty(), "config.env should have findings");
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&dir);
 }

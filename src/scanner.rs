@@ -3672,7 +3672,7 @@ keywords = ["key"]
         fn new_with_cache_finds_secrets() {
             let cache_path = setup_dir("finds_secrets");
             let scanner = Scanner::new_with_cache(&cache_path).unwrap();
-            let findings = scanner.scan_text("AKIAIOSFODNN7EXAMPLE", None);
+            let findings = scanner.scan_text("AKIAIOSFODNN7ZZZABCD", None);
             assert!(!findings.is_empty(), "should detect AWS key");
             let _ = std::fs::remove_file(&cache_path);
         }
