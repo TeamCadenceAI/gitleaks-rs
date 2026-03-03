@@ -3611,4 +3611,104 @@ keywords = ["key"]
             assert_eq!(caps.len(), 2);
         }
     }
+
+    // ----- new_with_cache constructor tests -----
+
+    #[cfg(feature = "cache")]
+    mod new_with_cache_tests {
+        use super::*;
+        use std::path::PathBuf;
+
+        fn unique_cache_path(name: &str) -> PathBuf {
+            std::env::temp_dir()
+                .join("gitleaks_rs_scanner_nwc_test")
+                .join(format!("{name}.cache"))
+        }
+
+        fn setup_dir(name: &str) -> PathBuf {
+            let path = unique_cache_path(name);
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::remove_file(&path);
+            path
+        }
+
+        #[test]
+        fn new_with_cache_cold_start_succeeds() {
+            let cache_path = setup_dir("cold_start");
+            let scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(
+                scanner.rule_count() > 200,
+                "expected 222+ rules from default config"
+            );
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_creates_cache_file() {
+            let cache_path = setup_dir("creates_file");
+            assert!(!cache_path.exists());
+            let _scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(
+                cache_path.exists(),
+                "cache file should be created on cold start"
+            );
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_hot_start_loads_from_cache() {
+            let cache_path = setup_dir("hot_start");
+            // Cold start: creates cache
+            let _scanner1 = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(cache_path.exists());
+
+            // Hot start: loads from cache
+            let scanner2 = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(scanner2.rule_count() > 200);
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_finds_secrets() {
+            let cache_path = setup_dir("finds_secrets");
+            let scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            let findings = scanner.scan_text("AKIAIOSFODNN7EXAMPLE", None);
+            assert!(!findings.is_empty(), "should detect AWS key");
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_corrupt_file_fallback() {
+            let cache_path = setup_dir("corrupt_fallback");
+            // Write garbage to cache path
+            std::fs::write(&cache_path, b"not a valid cache file").unwrap();
+
+            // Should fall back to full compilation without error
+            let scanner = Scanner::new_with_cache(&cache_path).unwrap();
+            assert!(scanner.rule_count() > 200);
+            let _ = std::fs::remove_file(&cache_path);
+        }
+
+        #[test]
+        fn new_with_cache_missing_parent_dir_fallback() {
+            // Parent directory doesn't exist — save will fail, but constructor succeeds
+            let path = PathBuf::from("/tmp/gitleaks_rs_nonexistent_parent_dir_test/sub/cache.bin");
+            let scanner = Scanner::new_with_cache(&path).unwrap();
+            assert!(scanner.rule_count() > 200);
+        }
+
+        #[test]
+        fn new_with_cache_uses_default_config() {
+            let cache_path = setup_dir("default_config");
+            let scanner_cached = Scanner::new_with_cache(&cache_path).unwrap();
+            let config = Config::default().unwrap();
+            let scanner_eager = Scanner::new(config).unwrap();
+            assert_eq!(
+                scanner_cached.rule_count(),
+                scanner_eager.rule_count(),
+                "cached scanner should have same rule count as eager scanner"
+            );
+            let _ = std::fs::remove_file(&cache_path);
+        }
+    }
 }
