@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 pub const GITLEAKS_CONFIG_VERSION: &str = "v8.25.0";
 
 /// Embedded official gitleaks config TOML.
-const DEFAULT_CONFIG_TOML: &str = include_str!("default_config.toml");
+pub(crate) const DEFAULT_CONFIG_TOML: &str = include_str!("default_config.toml");
 
 // ---------------------------------------------------------------------------
 // Enums

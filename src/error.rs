@@ -11,6 +11,9 @@ pub enum Error {
     Validation(String),
     /// Regex compilation error (e.g. invalid pattern in a rule).
     Regex(regex::Error),
+    /// Cache read/write failure (feature-gated behind `cache`).
+    #[cfg(feature = "cache")]
+    Cache(String),
 }
 
 /// Convenience alias used throughout the crate.
@@ -23,6 +26,8 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::Validation(msg) => write!(f, "validation error: {msg}"),
             Error::Regex(e) => write!(f, "regex error: {e}"),
+            #[cfg(feature = "cache")]
+            Error::Cache(msg) => write!(f, "cache error: {msg}"),
         }
     }
 }
@@ -34,6 +39,8 @@ impl std::error::Error for Error {
             Error::Io(e) => Some(e),
             Error::Regex(e) => Some(e),
             Error::Validation(_) => None,
+            #[cfg(feature = "cache")]
+            Error::Cache(_) => None,
         }
     }
 }
@@ -101,5 +108,21 @@ mod tests {
 
         let val_err = Error::Validation("test".into());
         assert!(val_err.source().is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "cache")]
+    fn cache_error_display() {
+        let err = Error::Cache("test".into());
+        assert_eq!(err.to_string(), "cache error: test");
+    }
+
+    #[test]
+    #[cfg(feature = "cache")]
+    fn cache_error_source_is_none() {
+        use std::error::Error as StdError;
+
+        let err = Error::Cache("test".into());
+        assert!(err.source().is_none());
     }
 }
